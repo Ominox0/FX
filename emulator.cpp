@@ -3,7 +3,6 @@
 #include <sstream>
 #include <string>
 #include <vector>
-#include <chrono>
 #include <windows.h>
 #include "fx_core.h"
 
@@ -20,6 +19,11 @@ static HBITMAP g_oldBmp = nullptr;
 static int g_mouseX = 0;
 static int g_mouseY = 0;
 static bool g_mousePressed = false;
+static bool g_panic = false;
+static std::vector<std::string> g_log;
+static std::string g_mainPath;
+static LARGE_INTEGER g_freq;
+static LARGE_INTEGER g_prev;
 
 static COLORREF rgb565(unsigned short c){ int r=(c>>11)&31; int g=(c>>5)&63; int b=c&31; r = (r*255)/31; g = (g*255)/63; b = (b*255)/31; return RGB(r,g,b); }
 
@@ -39,8 +43,18 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
 static HWND create_window(){ WNDCLASSA wc{}; wc.lpfnWndProc = WndProc; wc.hInstance = GetModuleHandleA(NULL); wc.lpszClassName = "FxEmuWnd"; wc.hCursor = LoadCursor(NULL, IDC_ARROW); RegisterClassA(&wc); int W = FX_W*SCALE, H = FX_H*SCALE; HWND h = CreateWindowExA(0, wc.lpszClassName, "FX Emulator", WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT, W+16, H+39, NULL, NULL, wc.hInstance, NULL); ShowWindow(h, SW_SHOW); UpdateWindow(h); return h; }
 static void init_backbuffer(){ HDC wndDC = GetDC(g_hwnd); g_backDC = CreateCompatibleDC(wndDC); g_backBmp = CreateCompatibleBitmap(wndDC, FX_W, FX_H); g_oldBmp = (HBITMAP)SelectObject(g_backDC, g_backBmp); ReleaseDC(g_hwnd, wndDC); clear_backbuffer(0); }
 
-int main(){ g_hwnd = create_window(); init_backbuffer(); H = fx_create(read_file_desktop, print_cmd); fx_set_display(H, drawRect_gdi, drawText_gdi); fx_set_touch(H, touch_read_mouse); std::string prog = read_config_program(); std::string mainPath = std::string("programs/") + (prog.empty()? std::string("default") : prog) + std::string("/main.fx"); fx_load(H, mainPath); const char* err = fx_last_error(H); if(err && err[0]){ std::cout << "ERROR: "<<err<<"\n"; }
-    fx_call_setup(H); err = fx_last_error(H); if(err && err[0]){ std::cout << "ERROR: "<<err<<"\n"; }
-    auto last = std::chrono::steady_clock::now();
-    MSG m; while(true){ while(PeekMessage(&m, NULL, 0, 0, PM_REMOVE)){ TranslateMessage(&m); DispatchMessage(&m); } auto now = std::chrono::steady_clock::now(); float dt = std::chrono::duration<float>(now-last).count(); last=now; fx_call_loop(H, dt); const char* err2 = fx_last_error(H); if(err2 && err2[0]){ std::cout << "ERROR: "<<err2<<"\n"; fx_clear_error(H); } Sleep(16); }
+static void render_panic(){ clear_backbuffer(0); drawRect_gdi(0,0,FX_W,20,65535,false); drawText_gdi(6,4,"ERROR",65535,1); int y=26; int maxLines=12; int start = (int)std::max(0, (int)g_log.size()-maxLines); for(int i=start;i<(int)g_log.size();++i){ drawText_gdi(6,y,g_log[i],65535,1); y+=14; }
+    int bw=100,bh=24; int bx=FX_W/2 - bw/2; int by=FX_H - bh - 8; drawRect_gdi(bx,by,bw,bh,65535,false); drawText_gdi(bx+12,by+6,"Try reboot",65535,1);
+}
+
+static void init_timer(){ QueryPerformanceFrequency(&g_freq); QueryPerformanceCounter(&g_prev); }
+static float tick_dt(){ LARGE_INTEGER now; QueryPerformanceCounter(&now); float dt = (float)((double)(now.QuadPart - g_prev.QuadPart) / (double)g_freq.QuadPart); g_prev = now; return dt; }
+
+int main(){ g_hwnd = create_window(); init_backbuffer(); H = fx_create(read_file_desktop, print_cmd); fx_set_display(H, drawRect_gdi, drawText_gdi); fx_set_touch(H, touch_read_mouse); std::string prog = read_config_program(); g_mainPath = std::string("programs/") + (prog.empty()? std::string("default") : prog) + std::string("/main.fx"); fx_load(H, g_mainPath); const char* err = fx_last_error(H); if(err && err[0]){ g_log.push_back(err); g_panic=true; }
+    fx_call_setup(H); err = fx_last_error(H); if(err && err[0]){ g_log.push_back(err); g_panic=true; }
+    init_timer();
+    MSG m; while(true){ while(PeekMessage(&m, NULL, 0, 0, PM_REMOVE)){ TranslateMessage(&m); DispatchMessage(&m); } float dt = tick_dt(); if(!g_panic){ fx_call_loop(H, dt); }
+        const char* err2 = fx_last_error(H); if(err2 && err2[0]){ g_log.push_back(err2); g_panic=true; fx_clear_error(H); }
+        if(g_panic){ render_panic(); if(g_mousePressed){ int bw=100,bh=24; int bx=FX_W/2 - bw/2; int by=FX_H - bh - 8; int x=g_mouseX, y=g_mouseY; if(x>=bx && x<bx+bw && y>=by && y<by+bh){ fx_load(H, g_mainPath); fx_call_setup(H); g_log.clear(); g_panic=false; } } }
+        Sleep(16); }
     fx_destroy(H); return 0; }

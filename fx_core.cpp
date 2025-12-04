@@ -171,6 +171,13 @@ struct Interpreter{
     static string to_string_value(const Value& a){ if(a.type==Value::STRING) return a.s; if(a.type==Value::INT) return to_string(a.i); if(a.type==Value::FLOAT){ ostringstream oss; oss<<a.d; return oss.str(); } if(a.type==Value::BOOL) return a.b?"true":"false"; if(a.type==Value::LIST){ string out="["; for(size_t i=0;i<a.list.size();++i){ out+=to_string_value(*a.list[i]); if(i+1<a.list.size()) out+=", "; } out+="]"; return out; } if(a.type==Value::DICT){ string out="{"; bool first=true; for(auto &kv: a.dict){ if(!first) out+=", "; first=false; out+=kv.first+": "+to_string_value(*kv.second); } out+="}"; return out; } return string(); }
     static bool equal_values(const Value& a, const Value& b){ if(a.type==Value::STRING && b.type==Value::STRING) return a.s==b.s; if((a.type==Value::INT||a.type==Value::FLOAT) && (b.type==Value::INT||b.type==Value::FLOAT)) return num_to_double(a)==num_to_double(b); if(a.type==Value::BOOL && b.type==Value::BOOL) return a.b==b.b; return false; }
     void eval(){ for(auto &imp: prog.imports) handle_import(imp); for(auto &g: prog.globals){ Value v=eval_expr(g.value, globals); globals->define(g.name, v);} functions=prog.funcs; }
+
+    static string trim_ws(const string& s){ size_t a=0; while(a<s.size() && (s[a]==' '||s[a]=='\t'||s[a]=='\r'||s[a]=='\n')) a++; size_t b=s.size(); while(b>a && (s[b-1]==' '||s[b-1]=='\t'||s[b-1]=='\r'||s[b-1]=='\n')) b--; return s.substr(a,b-a); }
+    static Value make_dict(){ Value v; v.type=Value::DICT; return v; }
+    static Value make_list(){ Value v; v.type=Value::LIST; return v; }
+    static void dict_set(Value& d, const string& k, const Value& v){ d.dict[k]=make_shared<Value>(v); }
+    static Value parse_config_text(const string& text){ Value root=make_dict(); string cur; string line; for(size_t i=0;i<=text.size();++i){ char c = (i<text.size()? text[i]:'\n'); if(c=='\n'){ string t=trim_ws(line); line.clear(); if(t.empty()) continue; if(t.size()>2 && t.front()=='[' && t.back()==']'){ cur = t.substr(1,t.size()-2); if(root.dict.find(cur)==root.dict.end()){ Value sec=make_dict(); dict_set(root, cur, sec); } continue; } size_t eq = t.find('='); if(eq!=string::npos){ string key = trim_ws(t.substr(0,eq)); string val = trim_ws(t.substr(eq+1)); if(cur.empty()){ if(root.dict.find("root")==root.dict.end()){ Value sec=make_dict(); dict_set(root, "root", sec); } Value sec = *root.dict["root"]; dict_set(sec, key, Interpreter::make_str(val)); dict_set(root, "root", sec); } else { Value sec = *root.dict[cur]; dict_set(sec, key, Interpreter::make_str(val)); dict_set(root, cur, sec); } } continue; } else { line.push_back(c); } } return root; }
+    struct JsonParser{ string s; size_t i=0; JsonParser(string t):s(move(t)){} char peek(){ return i<s.size()? s[i]:'\0'; } char adv(){ return i<s.size()? s[i++]:'\0'; } void skip(){ while(i<s.size()){ char c=peek(); if(c==' '||c=='\t'||c=='\r'||c=='\n') { i++; continue; } break; } } Value parse(){ skip(); char c=peek(); if(c=='{') return parseObj(); if(c=='[') return parseArr(); if(c=='"') return parseStr(); if(c=='-'||isdigit(c)) return parseNum(); if(s.compare(i,4,"true")==0){ i+=4; return Interpreter::make_bool(true);} if(s.compare(i,5,"false")==0){ i+=5; return Interpreter::make_bool(false);} if(s.compare(i,4,"null")==0){ i+=4; Value v; return v;} Value v; return v; } Value parseObj(){ Value v=make_dict(); expect('{'); skip(); if(peek()=='}'){ adv(); return v; } while(true){ Value keyv = parseStr(); skip(); expect(':'); Value val = parse(); dict_set(v, keyv.s, val); skip(); if(peek()==','){ adv(); skip(); continue; } expect('}'); break; } return v; } Value parseArr(){ Value v=make_list(); expect('['); skip(); if(peek()==']'){ adv(); return v; } while(true){ Value it = parse(); v.list.push_back(make_shared<Value>(it)); skip(); if(peek()==','){ adv(); skip(); continue; } expect(']'); break; } return v; } Value parseStr(){ expect('"'); string out; while(i<s.size()){ char c=adv(); if(c=='\\'){ if(i<s.size()){ char e=adv(); out.push_back(e); } continue; } if(c=='"') break; out.push_back(c);} return Interpreter::make_str(out); } Value parseNum(){ size_t st=i; bool dot=false; while(i<s.size()){ char c=peek(); if(isdigit(c)){ i++; continue; } if(c=='.'||c=='e'||c=='E'){ dot=true; i++; continue; } if(c=='+'||c=='-'){ if(i>st && (s[i-1]=='e'||s[i-1]=='E')){ i++; continue; } break; } break; } string t=s.substr(st,i-st); if(dot) return Interpreter::make_float(strtod(t.c_str(), nullptr)); return Interpreter::make_int(stoll(t)); } void expect(char ch){ char c=adv(); if(c!=ch) throw runtime_error("Invalid JSON"); } };
     void handle_import(const ImportDecl& imp){
         string path = string("lib/")+imp.name+"/"+imp.version+"/entry.fx";
         string text = reader ? reader(path) : string();
@@ -340,6 +347,18 @@ struct Interpreter{
         if(imp.name=="List"){
             BuiltinModule bi;
             bi.fns["len"]= [](vector<Value> args)->Value{ const Value &lst = args[0]; if(lst.type==Value::LIST) return Interpreter::make_int((long long)lst.list.size()); return Interpreter::make_int(0); };
+            modules[imp.alias]=Module{true,bi,nullptr}; return;
+        }
+        if(imp.name=="Config"){
+            BuiltinModule bi;
+            bi.fns["load"]= [this](vector<Value> args)->Value{ string p = to_string_value(args[0]); string t = reader? reader(p): string(); return parse_config_text(t); };
+            bi.fns["parse"]= [this](vector<Value> args)->Value{ string t = to_string_value(args[0]); return parse_config_text(t); };
+            modules[imp.alias]=Module{true,bi,nullptr}; return;
+        }
+        if(imp.name=="JSON"){
+            BuiltinModule bi;
+            bi.fns["load"]= [this](vector<Value> args)->Value{ string p = to_string_value(args[0]); string t = reader? reader(p): string(); JsonParser jp(t); return jp.parse(); };
+            bi.fns["parse"]= [this](vector<Value> args)->Value{ string t = to_string_value(args[0]); JsonParser jp(t); return jp.parse(); };
             modules[imp.alias]=Module{true,bi,nullptr}; return;
         }
         throw runtime_error("Module not found");
