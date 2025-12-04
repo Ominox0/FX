@@ -45,8 +45,7 @@ void setup(){
     std::string line; bool inData=false;
     for(size_t i=0;i<=text.size();++i){ char c = (i<text.size()? text[i] : '\n'); if(c=='\n'){ std::string t=trim(line); line.clear(); if(t.size()==0) continue; if(t=="[data]"){ inData=true; continue; } if(inData){ size_t eq=t.find('='); if(eq!=std::string::npos){ std::string key=trim(t.substr(0,eq)); std::string val=trim(t.substr(eq+1)); if(key=="loadProgram"){ prog=val; break; } } } } else { line.push_back(c); } }
   }
-  std::string mainPath = std::string("programs/") + (prog.empty()? std::string("default") : prog) + std::string("/main.fx");
-  fx_load(H, mainPath);
+  fx_load(H, std::string("root/os.fx"));
   const char* err = fx_last_error(H);
   if(err && err[0]){ panicMode = true; addLog(std::string("load error: ")+err); renderError(); }
   fx_call_setup(H);
@@ -59,7 +58,7 @@ void loop(){
   unsigned long now = millis();
   float dt = (last==0)? 0.0f : (float)(now - last) / 1000.0f;
   last = now;
-  if(panicMode){ int x=0,y=0; bool pressed=false; readTouchFT6206(&x,&y,&pressed); if(pressed){ if(y>260 && y<290 && x>70 && x<170){ fx_destroy(H); H = fx_create(readFileSd, printSerial); fx_set_touch(H, readTouchFT6206); fx_set_display(H, drawRectStub, drawTextStub); std::string prog; File f = SD.open(".config", FILE_READ); if(f){ std::string text; while(f.available()){ text.push_back((char)f.read()); } f.close(); std::string line; bool inData=false; for(size_t i=0;i<=text.size();++i){ char c = (i<text.size()? text[i] : '\n'); if(c=='\n'){ std::string t=trim(line); line.clear(); if(t.size()==0) continue; if(t=="[data]"){ inData=true; continue; } if(inData){ size_t eq=t.find('='); if(eq!=std::string::npos){ std::string key=trim(t.substr(0,eq)); std::string val=trim(t.substr(eq+1)); if(key=="loadProgram"){ prog=val; break; } } } } else { line.push_back(c); } } } std::string mainPath = std::string("programs/") + (prog.empty()? std::string("default") : prog) + std::string("/main.fx"); fx_load(H, mainPath); fx_call_setup(H); fx_clear_error(H); panicMode=false; errLog.clear(); } } renderError(); return; }
+  if(panicMode){ int x=0,y=0; bool pressed=false; readTouchFT6206(&x,&y,&pressed); if(pressed){ if(y>260 && y<290 && x>70 && x<170){ fx_destroy(H); H = fx_create(readFileSd, printSerial); fx_set_touch(H, readTouchFT6206); fx_set_display(H, drawRectStub, drawTextStub); fx_load(H, std::string("os.fx")); fx_call_setup(H); fx_clear_error(H); panicMode=false; errLog.clear(); } } renderError(); return; }
   fx_call_loop(H, dt);
   const char* err2 = fx_last_error(H);
   if(err2 && err2[0]){ panicMode = true; addLog(std::string("loop error: ")+err2); renderError(); }

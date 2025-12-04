@@ -50,7 +50,7 @@ static void render_panic(){ clear_backbuffer(0); drawRect_gdi(0,0,FX_W,20,65535,
 static void init_timer(){ QueryPerformanceFrequency(&g_freq); QueryPerformanceCounter(&g_prev); }
 static float tick_dt(){ LARGE_INTEGER now; QueryPerformanceCounter(&now); float dt = (float)((double)(now.QuadPart - g_prev.QuadPart) / (double)g_freq.QuadPart); g_prev = now; return dt; }
 
-int main(){ g_hwnd = create_window(); init_backbuffer(); H = fx_create(read_file_desktop, print_cmd); fx_set_display(H, drawRect_gdi, drawText_gdi); fx_set_touch(H, touch_read_mouse); std::string prog = read_config_program(); g_mainPath = std::string("programs/") + (prog.empty()? std::string("default") : prog) + std::string("/main.fx"); fx_load(H, g_mainPath); const char* err = fx_last_error(H); if(err && err[0]){ g_log.push_back(err); g_panic=true; }
+int main(){ g_hwnd = create_window(); init_backbuffer(); H = fx_create(read_file_desktop, print_cmd); fx_set_display(H, drawRect_gdi, drawText_gdi); fx_set_touch(H, touch_read_mouse); g_mainPath = std::string("root/os.fx"); fx_load(H, g_mainPath); const char* err = fx_last_error(H); if(err && err[0]){ g_log.push_back(err); g_panic=true; }
     fx_call_setup(H); err = fx_last_error(H); if(err && err[0]){ g_log.push_back(err); g_panic=true; }
     init_timer();
     MSG m; while(true){ while(PeekMessage(&m, NULL, 0, 0, PM_REMOVE)){ TranslateMessage(&m); DispatchMessage(&m); } float dt = tick_dt(); if(!g_panic){ fx_call_loop(H, dt); }
