@@ -4,7 +4,9 @@
 #include <vector>
 #include <unordered_map>
 #include <memory>
+#include <functional>
 #ifndef ARDUINO
+#ifndef BARE_METAL
 #include <fstream>
 #include <cstdio>
 #ifdef _WIN32
@@ -21,6 +23,7 @@
 #include <errno.h>
 #endif
 #endif
+#endif
 #ifdef ARDUINO
 #include <Arduino.h>
 #include <SD.h>
@@ -28,7 +31,7 @@
 
 using namespace std;
 
-enum class TokKind { IMPORT, AS, VAR, FUNC, VOID, INT, FLOAT, STRING, BOOL, WHILE, FOR, IF, ELSE, ELSEIF, BREAK, RETURN, TRUE, FALSE, IDENT, INT_LITERAL, FLOAT_LITERAL, STRING_LITERAL, LPAR, RPAR, LBRACE, RBRACE, LBRACKET, RBRACKET, SEMI, COLON, COMMA, DOT, PLUS, MINUS, STAR, SLASH, PERCENT, LT, GT, LE, GE, EQEQ, NEQ, EQ, PLUSEQ, MINUSEQ, STAREQ, SLASHEQ, ANDAND, OROR, PLUSPLUS, MINUSMINUS, EOF_TOK };
+enum class TokKind { IMPORT, AS, VAR, FUNC, VOID, INT, FLOAT, STRING, BOOL, WHILE, FOR, IF, ELSE, ELSEIF, BREAK, RETURN, TRUE, FALSE, IDENT, INT_LITERAL, FLOAT_LITERAL, STRING_LITERAL, LPAR, RPAR, LBRACE, RBRACE, LBRACKET, RBRACKET, SEMI, COLON, COMMA, DOT, PLUS, MINUS, STAR, SLASH, PERCENT, LT, GT, LE, GE, EQEQ, NEQ, EQ, PLUSEQ, MINUSEQ, STAREQ, SLASHEQ, ANDAND, OROR, PLUSPLUS, MINUSMINUS, NOT, TRY, EXCEPT, EOF_TOK };
 
 struct Token { TokKind kind; string text; double num; size_t pos; };
 
@@ -36,7 +39,7 @@ struct Lexer {
     string s; size_t i=0;
     unordered_map<string, TokKind> kw;
     Lexer(const string& t): s(t) {
-        kw = {{"import",TokKind::IMPORT},{"as",TokKind::AS},{"var",TokKind::VAR},{"func",TokKind::FUNC},{"void",TokKind::VOID},{"int",TokKind::INT},{"float",TokKind::FLOAT},{"string",TokKind::STRING},{"bool",TokKind::BOOL},{"while",TokKind::WHILE},{"for",TokKind::FOR},{"if",TokKind::IF},{"else",TokKind::ELSE},{"else-if",TokKind::ELSEIF},{"break",TokKind::BREAK},{"return",TokKind::RETURN},{"true",TokKind::TRUE},{"false",TokKind::FALSE}};
+        kw = {{"import",TokKind::IMPORT},{"as",TokKind::AS},{"var",TokKind::VAR},{"func",TokKind::FUNC},{"void",TokKind::VOID},{"int",TokKind::INT},{"float",TokKind::FLOAT},{"string",TokKind::STRING},{"bool",TokKind::BOOL},{"while",TokKind::WHILE},{"for",TokKind::FOR},{"if",TokKind::IF},{"else",TokKind::ELSE},{"else-if",TokKind::ELSEIF},{"break",TokKind::BREAK},{"return",TokKind::RETURN},{"true",TokKind::TRUE},{"false",TokKind::FALSE},{"try",TokKind::TRY},{"except",TokKind::EXCEPT}};
     }
     char peek(){ return i<s.size()? s[i] : '\0'; }
     char adv(){ return i<s.size()? s[i++]:'\0'; }
@@ -69,12 +72,13 @@ struct Lexer {
                 else if(ch=='<') out.push_back(make(TokKind::LT,"<"));
                 else if(ch=='>') out.push_back(make(TokKind::GT,">"));
                 else if(ch=='=') out.push_back(make(TokKind::EQ,"="));
-                else if(ch=='!'||ch=='&'||ch=='|') throw runtime_error(string("Unexpected character ")+ch);
+                else if(ch=='!') out.push_back(make(TokKind::NOT,"!"));
+                else if(ch=='&'||ch=='|') throw runtime_error(string("Unexpected character ")+ch);
                 continue;
             }
             if(c=='"' || c=='\''){ string v=readString(); out.push_back(Token{TokKind::STRING_LITERAL, v, 0, i}); continue; }
             if(isdigit(c)){ string v=readNumber(); if(v.find('.')!=string::npos){ out.push_back(Token{TokKind::FLOAT_LITERAL, v, stod(v), i}); } else { out.push_back(Token{TokKind::INT_LITERAL, v, (double)stoll(v), i}); } continue; }
-            if(isalpha(c)||c=='_'){ string id=readIdent(); if(id=="else" && i+3<=s.size() && s[i]=='-' && s.substr(i+1,2)=="if"){ i+=3; out.push_back(Token{TokKind::ELSEIF,"else-if",0,i}); continue; } auto it=kw.find(id); if(it!=kw.end()) out.push_back(Token{it->second,id,0,i}); else out.push_back(Token{TokKind::IDENT,id,0,i}); continue; }
+            if(isalpha(c)||c=='_'){ string id=readIdent(); if(id=="else" && i+3<=s.size() && s[i]=='-' && s.substr(i+1,2)=="if"){ i+=3; out.push_back(Token{TokKind::ELSEIF,"else-if",0,i}); continue; } if(id=="try"){ out.push_back(Token{TokKind::TRY,id,0,i}); continue; } if(id=="except"){ out.push_back(Token{TokKind::EXCEPT,id,0,i}); continue; } auto it=kw.find(id); if(it!=kw.end()) out.push_back(Token{it->second,id,0,i}); else out.push_back(Token{TokKind::IDENT,id,0,i}); continue; }
             throw runtime_error(string("Unexpected character ")+c);
         }
         out.push_back(Token{TokKind::EOF_TOK,"",0,i});
@@ -106,6 +110,7 @@ struct ForStmt:Stmt{ ExprPtr init,cond,post; vector<StmtPtr> body; ForStmt(ExprP
 struct IfStmt:Stmt{ ExprPtr cond; vector<StmtPtr> thenBody; vector<pair<ExprPtr, vector<StmtPtr>>> elifs; vector<StmtPtr> elseBody; IfStmt(ExprPtr c, vector<StmtPtr> t, vector<pair<ExprPtr, vector<StmtPtr>>> e, vector<StmtPtr> eb):cond(move(c)),thenBody(move(t)),elifs(move(e)),elseBody(move(eb)){} };
 struct BreakStmt:Stmt{};
 struct ReturnStmt:Stmt{ ExprPtr value; ReturnStmt(ExprPtr v):value(move(v)){} };
+struct TryStmt:Stmt{ vector<StmtPtr> tryBody; vector<StmtPtr> exceptBody; TryStmt(vector<StmtPtr> t, vector<StmtPtr> e):tryBody(move(t)), exceptBody(move(e)){} };
 
 struct FuncDecl { string ret,name; vector<pair<string,string>> params; vector<StmtPtr> body; };
 struct ImportDecl { string name, version, alias; string path; string varName; };
@@ -117,7 +122,7 @@ struct Parser {
     Parser(vector<Token> t): ts(move(t)){}
     Token& peek(){ return ts[i]; }
     bool match(TokKind k){ if(peek().kind==k){ i++; return true; } return false; }
-    const char* name(TokKind k){ switch(k){ case TokKind::IMPORT: return "IMPORT"; case TokKind::AS: return "AS"; case TokKind::VAR: return "VAR"; case TokKind::FUNC: return "FUNC"; case TokKind::VOID: return "VOID"; case TokKind::INT: return "INT"; case TokKind::FLOAT: return "FLOAT"; case TokKind::STRING: return "STRING"; case TokKind::BOOL: return "BOOL"; case TokKind::WHILE: return "WHILE"; case TokKind::FOR: return "FOR"; case TokKind::IF: return "IF"; case TokKind::ELSE: return "ELSE"; case TokKind::ELSEIF: return "ELSEIF"; case TokKind::BREAK: return "BREAK"; case TokKind::RETURN: return "RETURN"; case TokKind::TRUE: return "TRUE"; case TokKind::FALSE: return "FALSE"; case TokKind::IDENT: return "IDENT"; case TokKind::INT_LITERAL: return "INT_LITERAL"; case TokKind::FLOAT_LITERAL: return "FLOAT_LITERAL"; case TokKind::STRING_LITERAL: return "STRING_LITERAL"; case TokKind::LPAR: return "("; case TokKind::RPAR: return ")"; case TokKind::LBRACE: return "{"; case TokKind::RBRACE: return "}"; case TokKind::LBRACKET: return "["; case TokKind::RBRACKET: return "]"; case TokKind::SEMI: return ";"; case TokKind::COLON: return ":"; case TokKind::COMMA: return ","; case TokKind::DOT: return "."; case TokKind::PLUS: return "+"; case TokKind::MINUS: return "-"; case TokKind::STAR: return "*"; case TokKind::SLASH: return "/"; case TokKind::PERCENT: return "%"; case TokKind::LT: return "<"; case TokKind::GT: return ">"; case TokKind::LE: return "<="; case TokKind::GE: return ">="; case TokKind::EQEQ: return "=="; case TokKind::NEQ: return "!="; case TokKind::EQ: return "="; case TokKind::PLUSEQ: return "+="; case TokKind::MINUSEQ: return "-="; case TokKind::STAREQ: return "*="; case TokKind::SLASHEQ: return "/="; case TokKind::ANDAND: return "&&"; case TokKind::OROR: return "||"; case TokKind::PLUSPLUS: return "++"; case TokKind::MINUSMINUS: return "--"; case TokKind::EOF_TOK: return "EOF"; default: return "?"; } }
+    const char* name(TokKind k){ switch(k){ case TokKind::IMPORT: return "IMPORT"; case TokKind::AS: return "AS"; case TokKind::VAR: return "VAR"; case TokKind::FUNC: return "FUNC"; case TokKind::VOID: return "VOID"; case TokKind::INT: return "INT"; case TokKind::FLOAT: return "FLOAT"; case TokKind::STRING: return "STRING"; case TokKind::BOOL: return "BOOL"; case TokKind::WHILE: return "WHILE"; case TokKind::FOR: return "FOR"; case TokKind::IF: return "IF"; case TokKind::ELSE: return "ELSE"; case TokKind::ELSEIF: return "ELSEIF"; case TokKind::BREAK: return "BREAK"; case TokKind::RETURN: return "RETURN"; case TokKind::TRUE: return "TRUE"; case TokKind::FALSE: return "FALSE"; case TokKind::IDENT: return "IDENT"; case TokKind::INT_LITERAL: return "INT_LITERAL"; case TokKind::FLOAT_LITERAL: return "FLOAT_LITERAL"; case TokKind::STRING_LITERAL: return "STRING_LITERAL"; case TokKind::LPAR: return "("; case TokKind::RPAR: return ")"; case TokKind::LBRACE: return "{"; case TokKind::RBRACE: return "}"; case TokKind::LBRACKET: return "["; case TokKind::RBRACKET: return "]"; case TokKind::SEMI: return ";"; case TokKind::COLON: return ":"; case TokKind::COMMA: return ","; case TokKind::DOT: return "."; case TokKind::PLUS: return "+"; case TokKind::MINUS: return "-"; case TokKind::STAR: return "*"; case TokKind::SLASH: return "/"; case TokKind::PERCENT: return "%"; case TokKind::LT: return "<"; case TokKind::GT: return ">"; case TokKind::LE: return "<="; case TokKind::GE: return ">="; case TokKind::EQEQ: return "=="; case TokKind::NEQ: return "!="; case TokKind::EQ: return "="; case TokKind::PLUSEQ: return "+="; case TokKind::MINUSEQ: return "-="; case TokKind::STAREQ: return "*="; case TokKind::SLASHEQ: return "/="; case TokKind::ANDAND: return "&&"; case TokKind::OROR: return "||"; case TokKind::PLUSPLUS: return "++"; case TokKind::MINUSMINUS: return "--"; case TokKind::NOT: return "!"; case TokKind::TRY: return "try"; case TokKind::EXCEPT: return "except"; case TokKind::EOF_TOK: return "EOF"; default: return "?"; } }
     Token expect(TokKind k){ Token &t=peek(); if(t.kind!=k){ std::ostringstream oss; oss<<"Expected token "<<name(k)<<" but saw "<<name(t.kind); throw runtime_error(oss.str()); } i++; return t; }
     string parseType(){ TokKind k=peek().kind; if(k==TokKind::VOID||k==TokKind::INT||k==TokKind::FLOAT||k==TokKind::STRING||k==TokKind::BOOL){ string s; if(k==TokKind::VOID) s="void"; else if(k==TokKind::INT) s="int"; else if(k==TokKind::FLOAT) s="float"; else if(k==TokKind::STRING) s="string"; else s="bool"; i++; return s;} throw runtime_error("Type expected"); }
 Program parse(){ Program p; while(peek().kind!=TokKind::EOF_TOK){ if(peek().kind==TokKind::IMPORT){ p.imports.push_back(parseImport()); } else if(peek().kind==TokKind::VAR){ p.globals.push_back(parseVarDecl()); } else if(peek().kind==TokKind::FUNC){ auto f=parseFuncDecl(); p.funcs[f.name]=move(f); } else { throw runtime_error("Unexpected token"); } } return p; }
@@ -125,7 +130,8 @@ ImportDecl parseImport(){ expect(TokKind::IMPORT); ImportDecl imp; if(peek().kin
     VarDeclStmt parseVarDecl(){ expect(TokKind::VAR); string typ=parseType(); string name=expect(TokKind::IDENT).text; expect(TokKind::EQ); auto v=parseExpression(); expect(TokKind::SEMI); return VarDeclStmt(typ,name,v); }
     FuncDecl parseFuncDecl(){ expect(TokKind::FUNC); string ret=parseType(); string name=expect(TokKind::IDENT).text; expect(TokKind::LPAR); vector<pair<string,string>> params; if(peek().kind!=TokKind::RPAR){ while(true){ string pt=parseType(); string pn=expect(TokKind::IDENT).text; params.push_back({pt,pn}); if(match(TokKind::COMMA)) continue; else break; } } expect(TokKind::RPAR); auto body=parseBlock(); FuncDecl f; f.ret=ret; f.name=name; f.params=params; f.body=move(body); return f; }
     vector<StmtPtr> parseBlock(){ expect(TokKind::LBRACE); vector<StmtPtr> items; while(peek().kind!=TokKind::RBRACE){ items.push_back(parseStatement()); } expect(TokKind::RBRACE); return items; }
-    StmtPtr parseStatement(){ TokKind k=peek().kind; if(k==TokKind::IMPORT){ auto d=parseImport(); return make_shared<ImportStmtS>(d); } if(k==TokKind::VAR) return make_shared<VarDeclStmt>(parseVarDecl()); if(k==TokKind::WHILE) return parseWhile(); if(k==TokKind::FOR) return parseFor(); if(k==TokKind::IF) return parseIf(); if(k==TokKind::BREAK){ expect(TokKind::BREAK); expect(TokKind::SEMI); return make_shared<BreakStmt>(); } if(k==TokKind::RETURN){ expect(TokKind::RETURN); ExprPtr v; if(peek().kind!=TokKind::SEMI) v=parseExpression(); expect(TokKind::SEMI); return make_shared<ReturnStmt>(v); } auto e=parseExpression(); expect(TokKind::SEMI); return make_shared<ExprStmt>(e); }
+    StmtPtr parseTry(){ expect(TokKind::TRY); auto t=parseBlock(); expect(TokKind::EXCEPT); auto e=parseBlock(); return make_shared<TryStmt>(t,e); }
+    StmtPtr parseStatement(){ TokKind k=peek().kind; if(k==TokKind::IMPORT){ auto d=parseImport(); return make_shared<ImportStmtS>(d); } if(k==TokKind::VAR) return make_shared<VarDeclStmt>(parseVarDecl()); if(k==TokKind::WHILE) return parseWhile(); if(k==TokKind::FOR) return parseFor(); if(k==TokKind::IF) return parseIf(); if(k==TokKind::TRY) return parseTry(); if(k==TokKind::BREAK){ expect(TokKind::BREAK); expect(TokKind::SEMI); return make_shared<BreakStmt>(); } if(k==TokKind::RETURN){ expect(TokKind::RETURN); ExprPtr v; if(peek().kind!=TokKind::SEMI) v=parseExpression(); expect(TokKind::SEMI); return make_shared<ReturnStmt>(v); } auto e=parseExpression(); expect(TokKind::SEMI); return make_shared<ExprStmt>(e); }
     StmtPtr parseWhile(){ expect(TokKind::WHILE); expect(TokKind::LPAR); auto c=parseExpression(); expect(TokKind::RPAR); auto b=parseBlock(); return make_shared<WhileStmt>(c,b); }
     StmtPtr parseFor(){ expect(TokKind::FOR); expect(TokKind::LPAR); ExprPtr init; if(peek().kind!=TokKind::SEMI) init=parseExpression(); expect(TokKind::SEMI); ExprPtr cond; if(peek().kind!=TokKind::SEMI) cond=parseExpression(); expect(TokKind::SEMI); ExprPtr post; if(peek().kind!=TokKind::RPAR) post=parseExpression(); expect(TokKind::RPAR); auto b=parseBlock(); return make_shared<ForStmt>(init,cond,post,b); }
     StmtPtr parseIf(){ expect(TokKind::IF); expect(TokKind::LPAR); auto c=parseExpression(); expect(TokKind::RPAR); vector<StmtPtr> thenBody; if(peek().kind==TokKind::LBRACE){ thenBody = parseBlock(); } else { thenBody = { parseStatement() }; }
@@ -141,7 +147,7 @@ ImportDecl parseImport(){ expect(TokKind::IMPORT); ImportDecl imp; if(peek().kin
     ExprPtr parseComparison(){ auto e=parseTerm(); while(peek().kind==TokKind::LT||peek().kind==TokKind::GT||peek().kind==TokKind::LE||peek().kind==TokKind::GE){ TokKind k=peek().kind; string op=expect(k).text; auto r=parseTerm(); e=make_shared<BinaryExpr>(op,e,r);} return e; }
     ExprPtr parseTerm(){ auto e=parseFactor(); while(peek().kind==TokKind::PLUS||peek().kind==TokKind::MINUS){ TokKind k=peek().kind; string op=expect(k).text; auto r=parseFactor(); e=make_shared<BinaryExpr>(op,e,r);} return e; }
     ExprPtr parseFactor(){ auto e=parseUnary(); while(peek().kind==TokKind::STAR||peek().kind==TokKind::SLASH||peek().kind==TokKind::PERCENT){ TokKind k=peek().kind; string op=expect(k).text; auto r=parseUnary(); e=make_shared<BinaryExpr>(op,e,r);} return e; }
-    ExprPtr parseUnary(){ TokKind k=peek().kind; if(k==TokKind::MINUS||k==TokKind::PLUS||k==TokKind::PLUSPLUS||k==TokKind::MINUSMINUS){ string op=expect(k).text; if(op=="++"||op=="--"){ auto t=parseUnary(); return make_shared<UpdateExpr>(op,t,true);} auto r=parseUnary(); return make_shared<UnaryExpr>(op,r);} return parseCall(); }
+    ExprPtr parseUnary(){ TokKind k=peek().kind; if(k==TokKind::MINUS||k==TokKind::PLUS||k==TokKind::PLUSPLUS||k==TokKind::MINUSMINUS||k==TokKind::NOT){ string op=expect(k).text; if(op=="++"||op=="--"){ auto t=parseUnary(); return make_shared<UpdateExpr>(op,t,true);} auto r=parseUnary(); return make_shared<UnaryExpr>(op,r);} return parseCall(); }
     ExprPtr parseCall(){ auto e=parsePrimary(); while(true){ if(peek().kind==TokKind::LPAR){ vector<ExprPtr> args; expect(TokKind::LPAR); if(peek().kind!=TokKind::RPAR){ while(true){ args.push_back(parseExpression()); if(match(TokKind::COMMA)) continue; else break; } } expect(TokKind::RPAR); e=make_shared<CallExpr>(e,args); continue; } if(peek().kind==TokKind::DOT){ expect(TokKind::DOT); string name=expect(TokKind::IDENT).text; e=make_shared<MemberExpr>(e,name); continue; } if(peek().kind==TokKind::LBRACKET){ expect(TokKind::LBRACKET); auto idx=parseExpression(); expect(TokKind::RBRACKET); e=make_shared<IndexExpr>(e, idx); continue; } if(peek().kind==TokKind::PLUSPLUS||peek().kind==TokKind::MINUSMINUS){ string op=expect(peek().kind).text; e=make_shared<UpdateExpr>(op,e,false); continue; } break; } return e; }
     ExprPtr parsePrimary(){ Token &t=peek(); if(t.kind==TokKind::INT_LITERAL){ long long v=(long long)t.num; expect(TokKind::INT_LITERAL); return make_shared<IntExpr>(v);} if(t.kind==TokKind::FLOAT_LITERAL){ double v=t.num; expect(TokKind::FLOAT_LITERAL); return make_shared<FloatExpr>(v);} if(t.kind==TokKind::STRING_LITERAL){ string v=t.text; expect(TokKind::STRING_LITERAL); return make_shared<StringExpr>(v);} if(t.kind==TokKind::TRUE){ expect(TokKind::TRUE); return make_shared<BoolExpr>(true);} if(t.kind==TokKind::FALSE){ expect(TokKind::FALSE); return make_shared<BoolExpr>(false);} if(t.kind==TokKind::IDENT){ string n=t.text; expect(TokKind::IDENT); return make_shared<IdentExpr>(n);} if(t.kind==TokKind::LPAR){ expect(TokKind::LPAR); auto e=parseExpression(); expect(TokKind::RPAR); return e;} if(t.kind==TokKind::LBRACKET){ expect(TokKind::LBRACKET); vector<ExprPtr> items; if(peek().kind!=TokKind::RBRACKET){ while(true){ items.push_back(parseExpression()); if(match(TokKind::COMMA)) continue; else break; } } expect(TokKind::RBRACKET); return make_shared<ListExpr>(items);} if(t.kind==TokKind::LBRACE){ expect(TokKind::LBRACE); vector<pair<string,ExprPtr>> items; if(peek().kind!=TokKind::RBRACE){ while(true){ string key; if(peek().kind==TokKind::STRING_LITERAL){ key=expect(TokKind::STRING_LITERAL).text; } else { key=expect(TokKind::IDENT).text; } expect(TokKind::COLON); auto val=parseExpression(); items.push_back({key,val}); if(match(TokKind::COMMA)) continue; else break; } } expect(TokKind::RBRACE); return make_shared<DictExpr>(items);} throw runtime_error("Expression expected"); }
 };
@@ -209,9 +215,11 @@ struct Interpreter{
             bi.fns["readFile"]= [this](vector<Value> args)->Value{
                 string p = to_string_value(args[0]);
                 string data;
-                #ifdef ARDUINO
+                #if defined(ARDUINO)
                 File f = SD.open(p.c_str(), FILE_READ);
                 if(f){ while(f.available()){ data.push_back((char)f.read()); } f.close(); }
+                #elif defined(BARE_METAL)
+                data = reader ? reader(p) : string();
                 #else
                 ifstream in(p, ios::binary);
                 if(in.good()){ ostringstream ss; ss<<in.rdbuf(); data=ss.str(); }
@@ -226,6 +234,8 @@ struct Interpreter{
                 SD.remove(p.c_str());
                 File f = SD.open(p.c_str(), FILE_WRITE);
                 if(f){ f.write((const uint8_t*)d.data(), d.size()); f.close(); ok=true; }
+                #elif defined(BARE_METAL)
+                ok=false;
                 #else
                 ofstream out(p, ios::binary|ios::trunc);
                 if(out.good()){ out.write(d.data(), (streamsize)d.size()); out.close(); ok=true; }
@@ -237,6 +247,8 @@ struct Interpreter{
                 bool ok=false;
                 #ifdef ARDUINO
                 ok = SD.remove(p.c_str());
+                #elif defined(BARE_METAL)
+                ok=false;
                 #else
                 ok = std::remove(p.c_str())==0;
                 #endif
@@ -247,6 +259,8 @@ struct Interpreter{
                 bool ok=false;
                 #ifdef ARDUINO
                 ok = SD.mkdir(p.c_str());
+                #elif defined(BARE_METAL)
+                ok=false;
                 #else
                 #ifdef _WIN32
                 string q=p; for(size_t i=0;i<q.size();++i) if(q[i]=='/') q[i]='\\'; ok = CreateDirectoryA(q.c_str(), NULL) || GetLastError()==ERROR_ALREADY_EXISTS;
@@ -265,6 +279,8 @@ struct Interpreter{
                     while(true){ File entry = dir.openNextFile(); if(!entry) break; out += string(entry.name()); out += "\n"; entry.close(); }
                     dir.close();
                 }
+                #elif defined(BARE_METAL)
+                out = reader ? reader(p) : string();
                 #else
                 #ifdef _WIN32
                 string pat=p; for(size_t i=0;i<pat.size();++i) if(pat[i]=='/') pat[i]='\\'; if(!pat.empty() && pat.back()!='\\') pat += "\\"; pat += "*";
@@ -420,6 +436,11 @@ struct Interpreter{
             if(!d.varName.empty()){ Value v = env->get(d.varName); string p = to_string_value(v); load_module_from_path(p, d.alias); return; }
             handle_import(d); return;
         }
+        if(auto ts = dynamic_pointer_cast<TryStmt>(st)){
+            try{ exec_block(ts->tryBody, make_shared<Env>(env)); }
+            catch(...){ exec_block(ts->exceptBody, make_shared<Env>(env)); }
+            return;
+        }
         if(auto v = dynamic_pointer_cast<VarDeclStmt>(st)){ Value val=eval_expr(v->value, env); env->define(v->name, val); return; }
         if(auto e = dynamic_pointer_cast<ExprStmt>(st)){ eval_expr(e->expr, env); return; }
         if(auto w = dynamic_pointer_cast<WhileStmt>(st)){ while(truthy(eval_expr(w->cond, env))){ try{ exec_block(w->body, make_shared<Env>(env)); } catch(BreakSignal&){ break; } } return; }
@@ -429,7 +450,7 @@ struct Interpreter{
         if(auto r = dynamic_pointer_cast<ReturnStmt>(st)){ Value v; if(r->value) v=eval_expr(r->value, env); throw ReturnSignal{v}; }
         throw runtime_error("Unknown statement");
     }
-    Value eval_expr(const ExprPtr& e, shared_ptr<Env> env){ if(auto p=dynamic_pointer_cast<IntExpr>(e)) return make_int(p->v); if(auto p=dynamic_pointer_cast<FloatExpr>(e)) return make_float(p->v); if(auto p=dynamic_pointer_cast<StringExpr>(e)) return make_str(p->v); if(auto p=dynamic_pointer_cast<BoolExpr>(e)) return make_bool(p->v); if(auto p=dynamic_pointer_cast<IdentExpr>(e)) return env->get(p->name); if(auto p=dynamic_pointer_cast<UnaryExpr>(e)){ Value v=eval_expr(p->expr, env); if(p->op=="-"){ if(v.type==Value::FLOAT) return make_float(-v.d); if(v.type==Value::INT) return make_int(-v.i); throw runtime_error("Numeric expected"); } if(p->op=="+"){ return v; } } if(auto p=dynamic_pointer_cast<BinaryExpr>(e)){ Value lv=eval_expr(p->l, env); Value rv=eval_expr(p->r, env); string op=p->op; if(op=="+"){ if(lv.type==Value::STRING || rv.type==Value::STRING){ string a=to_string_value(lv); string b=to_string_value(rv); return make_str(a+b);} double a=num_to_double(lv), b=num_to_double(rv); return make_float(a+b);} if(op=="-"){ double a=num_to_double(lv), b=num_to_double(rv); return make_float(a-b);} if(op=="*"){ double a=num_to_double(lv), b=num_to_double(rv); return make_float(a*b);} if(op=="/"){ double a=num_to_double(lv), b=num_to_double(rv); return make_float(a/b);} if(op=="%"){ long long a=num_to_int(lv), b=num_to_int(rv); return make_int(a%b);} if(op=="=="){ return make_bool(equal_values(lv,rv));} if(op=="!="){ return make_bool(!equal_values(lv,rv));} if(op=="<"){ return make_bool(num_to_double(lv)<num_to_double(rv));} if(op==">"){ return make_bool(num_to_double(lv)>num_to_double(rv));} if(op=="<="){ return make_bool(num_to_double(lv)<=num_to_double(rv));} if(op==">="){ return make_bool(num_to_double(lv)>=num_to_double(rv));} if(op=="&&"){ return make_bool(truthy(lv) && truthy(rv));} if(op=="||"){ return make_bool(truthy(lv) || truthy(rv));} }
+    Value eval_expr(const ExprPtr& e, shared_ptr<Env> env){ if(auto p=dynamic_pointer_cast<IntExpr>(e)) return make_int(p->v); if(auto p=dynamic_pointer_cast<FloatExpr>(e)) return make_float(p->v); if(auto p=dynamic_pointer_cast<StringExpr>(e)) return make_str(p->v); if(auto p=dynamic_pointer_cast<BoolExpr>(e)) return make_bool(p->v); if(auto p=dynamic_pointer_cast<IdentExpr>(e)) return env->get(p->name); if(auto p=dynamic_pointer_cast<UnaryExpr>(e)){ Value v=eval_expr(p->expr, env); if(p->op=="-"){ if(v.type==Value::FLOAT) return make_float(-v.d); if(v.type==Value::INT) return make_int(-v.i); throw runtime_error("Numeric expected"); } if(p->op=="+"){ return v; } if(p->op=="!"){ return make_bool(!truthy(v)); } } if(auto p=dynamic_pointer_cast<BinaryExpr>(e)){ Value lv=eval_expr(p->l, env); Value rv=eval_expr(p->r, env); string op=p->op; if(op=="+"){ if(lv.type==Value::STRING || rv.type==Value::STRING){ string a=to_string_value(lv); string b=to_string_value(rv); return make_str(a+b);} double a=num_to_double(lv), b=num_to_double(rv); return make_float(a+b);} if(op=="-"){ double a=num_to_double(lv), b=num_to_double(rv); return make_float(a-b);} if(op=="*"){ double a=num_to_double(lv), b=num_to_double(rv); return make_float(a*b);} if(op=="/"){ double a=num_to_double(lv), b=num_to_double(rv); return make_float(a/b);} if(op=="%"){ long long a=num_to_int(lv), b=num_to_int(rv); return make_int(a%b);} if(op=="=="){ return make_bool(equal_values(lv,rv));} if(op=="!="){ return make_bool(!equal_values(lv,rv));} if(op=="<"){ return make_bool(num_to_double(lv)<num_to_double(rv));} if(op==">"){ return make_bool(num_to_double(lv)>num_to_double(rv));} if(op=="<="){ return make_bool(num_to_double(lv)<=num_to_double(rv));} if(op==">="){ return make_bool(num_to_double(lv)>=num_to_double(rv));} if(op=="&&"){ return make_bool(truthy(lv) && truthy(rv));} if(op=="||"){ return make_bool(truthy(lv) || truthy(rv));} }
         if(auto p=dynamic_pointer_cast<AssignExpr>(e)){
             if(auto id=dynamic_pointer_cast<IdentExpr>(p->left)){
                 string n=id->name; if(p->op=="="){ Value v=eval_expr(p->right, env); env->set(n,v); return v;} Value base=env->get(n); Value delta=eval_expr(p->right, env); if(p->op=="+="){ double a=num_to_double(base), b=num_to_double(delta); env->set(n, make_float(a+b)); return env->get(n);} if(p->op=="-="){ double a=num_to_double(base), b=num_to_double(delta); env->set(n, make_float(a-b)); return env->get(n);} if(p->op=="*="){ double a=num_to_double(base), b=num_to_double(delta); env->set(n, make_float(a*b)); return env->get(n);} if(p->op=="/="){ double a=num_to_double(base), b=num_to_double(delta); env->set(n, make_float(a/b)); return env->get(n);} throw runtime_error("Unsupported assignment");

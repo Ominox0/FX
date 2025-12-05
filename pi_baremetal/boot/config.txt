@@ -1,0 +1,4 @@
+arm_64bit=1
+kernel=kernel8.img
+disable_commandline_tags=1
+disable_splash=1
